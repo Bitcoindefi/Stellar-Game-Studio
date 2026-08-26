@@ -4,7 +4,7 @@ Development Tools For Web3 Game Builders On Stellar.
 
 Ecosystem ready game templates and examples ready to scaffold into into your development workflow
 
-**Start here:** [Stellar Game Studio](https://jamesbachini.github.io/Stellar-Game-Studio/)
+**Start here:** [Stellar Game Studio](https://bitcoindefi.github.io/Stellar-Game-Studio/)
 
 > **Note:** This is a community-maintained fork continuing the work of the original author, [James Bachini](https://github.com/jamesbachini), who sadly passed away. The link above points to his original project page. For the actively maintained version, start with this repository — see the docs in this repo's `docs/` folder. The project remains MIT licensed, with full credit to James for creating Stellar Game Studio.
 
