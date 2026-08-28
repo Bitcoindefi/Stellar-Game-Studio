@@ -210,7 +210,10 @@ impl MockGameHub {
 #[cfg(test)]
 mod test {
     use super::*;
-    use soroban_sdk::testutils::Address as _;
+    use soroban_sdk::{
+        testutils::{Address as _, Events as _},
+        Event as _,
+    };
 
     /// Calls the Hub as a real contract owner. No global auth mocking is used,
     /// so `game_id.require_auth()` is exercised by the host authorization tree.
@@ -283,6 +286,18 @@ mod test {
         assert_eq!(active.player2_points, 29);
 
         owner.cancel(&hub, &7);
+        assert_eq!(
+            env.events().all().filter_by_contract(&hub),
+            [GameCancelled {
+                session_id: 7,
+                player1,
+                player2,
+                player1_refund: 11,
+                player2_refund: 29,
+            }
+            .to_xdr(&env, &hub)],
+        );
+
         let cancelled = MockGameHubClient::new(&env, &hub).session(&7);
         assert_eq!(cancelled.status, SessionStatus::Cancelled);
         assert_eq!(cancelled.player1_won, None);
@@ -306,6 +321,12 @@ mod test {
         owner.cancel(&hub, &9);
         let duplicate_cancel = owner.try_cancel(&hub, &9);
         assert_hub_error(&duplicate_cancel, MockGameHubError::SessionAlreadyTerminal);
+        assert!(env
+            .events()
+            .all()
+            .filter_by_contract(&hub)
+            .events()
+            .is_empty());
         let end_after_cancel = owner.try_end(&hub, &9, &true);
         assert_hub_error(&end_after_cancel, MockGameHubError::SessionAlreadyTerminal);
 
@@ -338,13 +359,15 @@ mod test {
     }
 
     #[test]
-    fn a_different_contract_cannot_settle_the_session() {
+    fn a_different_contract_cannot_settle_or_cancel_the_session() {
         let (env, hub, owner, player1, player2) = setup();
         owner.start(&hub, &13, &player1, &player2, &23, &31);
 
         let other_owner_id = env.register(GameOwner, ());
         let other_owner = GameOwnerClient::new(&env, &other_owner_id);
         let unauthorized = other_owner.try_end(&hub, &13, &true);
+        assert!(matches!(unauthorized, Err(Err(_))));
+        let unauthorized = other_owner.try_cancel(&hub, &13);
         assert!(matches!(unauthorized, Err(Err(_))));
 
         let session = MockGameHubClient::new(&env, &hub).session(&13);
