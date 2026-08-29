@@ -4,9 +4,7 @@ Development Tools For Web3 Game Builders On Stellar.
 
 Ecosystem ready game templates and examples ready to scaffold into into your development workflow
 
-**Start here:** [Stellar Game Studio](https://jamesbachini.github.io/Stellar-Game-Studio/)
-
-
+**Start here:** [Stellar Game Studio](https://github.com/Bitcoindefi/Stellar-Game-Studio)
 ## Why this exists
 
 Stellar Game Studio is a toolkit for shipping web3 games quickly and efficiently. It pairs Stellar smart contract patterns with a ready-made frontend stack and deployment scripts, so you can focus on game design and gameplay mechanics.
@@ -24,7 +22,7 @@ Stellar Game Studio is a toolkit for shipping web3 games quickly and efficiently
 
 ```bash
 # Fork the repo, then:
-git clone https://github.com/jamesbachini/Stellar-Game-Studio
+git clone https://github.com/Bitcoindefi/Stellar-Game-Studio
 cd Stellar-Game-Studio
 bun install
 
