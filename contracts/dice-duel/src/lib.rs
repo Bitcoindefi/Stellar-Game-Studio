@@ -1,21 +1,17 @@
 #![no_std]
 
-//! # Dice Duel
+//! A two-player dice game using session-bound commit/reveal randomness.
 //!
-//! A two-player dice game where each player rolls two dice.
-//! The player with the highest total wins (ties go to player 1).
-//!
-//! **Game Hub Integration:**
-//! This game is Game Hub-aware and enforces all games to be played through the
-//! Game Hub contract. Games cannot be started or completed without points involvement.
+//! Both commitments and the exact game terms are authorized before the Game
+//! Hub locks either stake. Reveals are accepted through the inclusive ledger
+//! deadline. The dice are derived from the two secrets in player-role order,
+//! so neither public session inputs nor reveal order influence the result.
 
 use soroban_sdk::{
-    Address, Bytes, BytesN, Env, IntoVal, contract, contractclient, contracterror, contractimpl,
-    contracttype, vec
+    contract, contractclient, contracterror, contractimpl, contracttype, xdr::ToXdr, Address,
+    Bytes, BytesN, Env,
 };
 
-// Import GameHub contract interface
-// This allows us to call into the GameHub contract
 #[contractclient(name = "GameHubClient")]
 pub trait GameHub {
     fn start_game(
@@ -28,31 +24,81 @@ pub trait GameHub {
         player2_points: i128,
     );
 
-    fn end_game(
-        env: Env,
-        session_id: u32,
-        player1_won: bool
-    );
-}
+    fn end_game(env: Env, session_id: u32, player1_won: bool);
 
-// ============================================================================
-// Errors
-// ============================================================================
+    fn cancel_game(env: Env, session_id: u32);
+}
 
 #[contracterror]
 #[derive(Copy, Clone, Debug, Eq, PartialEq, PartialOrd, Ord)]
 #[repr(u32)]
 pub enum Error {
+    // Codes 1-5 are the legacy Dice Duel ABI and must not be renumbered.
     GameNotFound = 1,
     NotPlayer = 2,
     AlreadyRolled = 3,
     BothPlayersNotRolled = 4,
     GameAlreadyEnded = 5,
+    SamePlayer = 6,
+    GameAlreadyExists = 7,
+    InvalidDeadline = 8,
+    RevealDeadlinePassed = 9,
+    RevealDeadlineNotReached = 10,
+    WrongSecret = 11,
+    FinalizationInProgress = 12,
 }
 
-// ============================================================================
-// Data Types
-// ============================================================================
+pub const PLAYER1_ROLE: u32 = 1;
+pub const PLAYER2_ROLE: u32 = 2;
+pub const COMMITMENT_DOMAIN: &[u8] = b"stellar-game-studio:commitment:v1";
+pub const OUTCOME_DOMAIN: &[u8] = b"stellar-game-studio:dice-outcome:v1";
+pub const GAME_TAG: &[u8] = b"dice-duel";
+
+/// Persistent game entries remain live for 30 days at approximately five
+/// seconds per ledger. If left untouched longer, they can be restored from
+/// archival before settlement instead of being deleted irreversibly.
+pub const GAME_TTL_LEDGERS: u32 = 518_400;
+pub const TIMEOUT_RESOLUTION_GRACE_LEDGERS: u32 = 17_280;
+pub const MAX_REVEAL_WINDOW_LEDGERS: u32 = GAME_TTL_LEDGERS - TIMEOUT_RESOLUTION_GRACE_LEDGERS;
+
+#[contracttype]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Phase {
+    Revealing,
+    Ready,
+    Finalizing,
+    Settled,
+    Forfeited,
+    Cancelled,
+}
+
+/// A named Soroban value is used so `to_xdr` produces one canonical SCV_MAP.
+/// Every field is load-bearing replay context.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CommitmentPreimage {
+    pub domain: Bytes,
+    pub contract: Address,
+    pub game: Bytes,
+    pub session_id: u32,
+    pub role: u32,
+    pub revealing_player: Address,
+    pub player1: Address,
+    pub player2: Address,
+    pub player1_points: i128,
+    pub player2_points: i128,
+    pub secret: BytesN<32>,
+}
+
+/// Outcome entropy intentionally contains no session or other public input.
+/// Secrets always appear in player1/player2 order, never reveal order.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct OutcomePreimage {
+    pub domain: Bytes,
+    pub player1_secret: BytesN<32>,
+    pub player2_secret: BytesN<32>,
+}
 
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -61,8 +107,16 @@ pub struct Game {
     pub player2: Address,
     pub player1_points: i128,
     pub player2_points: i128,
+    pub game_hub: Address,
+    pub player1_commitment: BytesN<32>,
+    pub player2_commitment: BytesN<32>,
+    pub reveal_deadline: u32,
+    pub phase: Phase,
     pub player1_rolled: bool,
     pub player2_rolled: bool,
+    /// Only the first valid reveal must be retained. It is cleared as soon as
+    /// the second reveal deterministically prepares the dice.
+    pub first_secret: Option<BytesN<32>>,
     pub player1_die1: Option<u32>,
     pub player1_die2: Option<u32>,
     pub player2_die1: Option<u32>,
@@ -78,60 +132,127 @@ pub enum DataKey {
     Admin,
 }
 
-// ============================================================================
-// Storage TTL Management
-// ============================================================================
-// TTL (Time To Live) ensures game data doesn't expire unexpectedly
-// Games are stored in temporary storage with a minimum 30-day retention
-
-/// TTL for game storage (30 days in ledgers, ~5 seconds per ledger)
-/// 30 days = 30 * 24 * 60 * 60 / 5 = 518,400 ledgers
-const GAME_TTL_LEDGERS: u32 = 518_400;
-
-// ============================================================================
-// Helper Functions
-// ============================================================================
-
-/// Roll a single die (1-6) using deterministic PRNG
-fn roll_die(env: &Env, seed: BytesN<32>) -> u32 {
-    env.prng().seed(seed.into());
-    env.prng().gen_range::<u64>(1..=6) as u32
+#[allow(clippy::too_many_arguments)]
+fn commitment_digest(
+    env: &Env,
+    session_id: u32,
+    role: u32,
+    revealing_player: &Address,
+    player1: &Address,
+    player2: &Address,
+    player1_points: i128,
+    player2_points: i128,
+    secret: &BytesN<32>,
+) -> BytesN<32> {
+    let preimage = CommitmentPreimage {
+        domain: Bytes::from_slice(env, COMMITMENT_DOMAIN),
+        contract: env.current_contract_address(),
+        game: Bytes::from_slice(env, GAME_TAG),
+        session_id,
+        role,
+        revealing_player: revealing_player.clone(),
+        player1: player1.clone(),
+        player2: player2.clone(),
+        player1_points,
+        player2_points,
+        secret: secret.clone(),
+    };
+    env.crypto().sha256(&preimage.to_xdr(env)).to_bytes()
 }
 
-// ============================================================================
-// Contract Definition
-// ============================================================================
+fn prepare_dice(
+    env: &Env,
+    player1_secret: &BytesN<32>,
+    player2_secret: &BytesN<32>,
+) -> (u32, u32, u32, u32) {
+    let preimage = OutcomePreimage {
+        domain: Bytes::from_slice(env, OUTCOME_DOMAIN),
+        player1_secret: player1_secret.clone(),
+        player2_secret: player2_secret.clone(),
+    };
+    let seed = env.crypto().sha256(&preimage.to_xdr(env));
+    env.prng().seed(seed.into());
+    (
+        env.prng().gen_range::<u64>(1..=6) as u32,
+        env.prng().gen_range::<u64>(1..=6) as u32,
+        env.prng().gen_range::<u64>(1..=6) as u32,
+        env.prng().gen_range::<u64>(1..=6) as u32,
+    )
+}
+
+fn put_game(env: &Env, session_id: u32, game: &Game) {
+    let key = DataKey::Game(session_id);
+    env.storage().persistent().set(&key, game);
+    // Every game-state write refreshes retention. If a Hub invocation fails,
+    // Soroban rolls this write and the nested invocation back atomically.
+    env.storage()
+        .persistent()
+        .extend_ttl(&key, GAME_TTL_LEDGERS, GAME_TTL_LEDGERS);
+    // Refresh the contract instance/code together with game state. Otherwise
+    // a game opened late in the previous instance lifetime could outlive the
+    // contract that must settle it.
+    env.storage()
+        .instance()
+        .extend_ttl(GAME_TTL_LEDGERS, GAME_TTL_LEDGERS);
+}
+
+fn is_terminal(phase: Phase) -> bool {
+    matches!(phase, Phase::Settled | Phase::Forfeited | Phase::Cancelled)
+}
+
+fn end_hub_game(env: &Env, hub_address: &Address, session_id: u32, player1_won: bool) {
+    GameHubClient::new(env, hub_address).end_game(&session_id, &player1_won);
+}
+
+/// Kept isolated because production Hub cancellation compatibility remains a
+/// deployment gate independent of the Dice Duel lifecycle implementation.
+fn cancel_hub_game(env: &Env, hub_address: &Address, session_id: u32) {
+    GameHubClient::new(env, hub_address).cancel_game(&session_id);
+}
 
 #[contract]
 pub struct DiceDuelContract;
 
 #[contractimpl]
 impl DiceDuelContract {
-    /// Initialize the contract with GameHub address and admin
-    ///
-    /// # Arguments
-    /// * `admin` - Admin address (can upgrade contract)
-    /// * `game_hub` - Address of the GameHub contract
     pub fn __constructor(env: Env, admin: Address, game_hub: Address) {
-        // Store admin and GameHub address
         env.storage().instance().set(&DataKey::Admin, &admin);
         env.storage()
             .instance()
             .set(&DataKey::GameHubAddress, &game_hub);
+        env.storage()
+            .instance()
+            .extend_ttl(GAME_TTL_LEDGERS, GAME_TTL_LEDGERS);
     }
 
-    /// Start a new game between two players with points.
-    /// This creates a session in the Game Hub and locks points before starting the game.
-    ///
-    /// **CRITICAL:** This method requires authorization from THIS contract (not players).
-    /// The Game Hub will call `game_id.require_auth()` which checks this contract's address.
-    ///
-    /// # Arguments
-    /// * `session_id` - Unique session identifier (u32)
-    /// * `player1` - Address of first player
-    /// * `player2` - Address of second player
-    /// * `player1_points` - Points amount committed by player 1
-    /// * `player2_points` - Points amount committed by player 2
+    /// Return the commitment expected by `roll` for this contract instance.
+    #[allow(clippy::too_many_arguments)]
+    pub fn commitment(
+        env: Env,
+        session_id: u32,
+        role: u32,
+        revealing_player: Address,
+        player1: Address,
+        player2: Address,
+        player1_points: i128,
+        player2_points: i128,
+        secret: BytesN<32>,
+    ) -> BytesN<32> {
+        commitment_digest(
+            &env,
+            session_id,
+            role,
+            &revealing_player,
+            &player1,
+            &player2,
+            player1_points,
+            player2_points,
+            &secret,
+        )
+    }
+
+    /// Both signers authorize the complete game intent before the Hub lock.
+    #[allow(clippy::too_many_arguments)]
     pub fn start_game(
         env: Env,
         session_id: u32,
@@ -139,45 +260,50 @@ impl DiceDuelContract {
         player2: Address,
         player1_points: i128,
         player2_points: i128,
+        player1_commitment: BytesN<32>,
+        player2_commitment: BytesN<32>,
+        reveal_deadline: u32,
     ) -> Result<(), Error> {
-        // Prevent self-play: Player 1 and Player 2 must be different
         if player1 == player2 {
-            panic!("Cannot play against yourself: Player 1 and Player 2 must be different addresses");
+            return Err(Error::SamePlayer);
         }
 
-        // Require authentication from both players (they consent to committing points)
-        player1.require_auth_for_args(vec![&env, session_id.into_val(&env), player1_points.into_val(&env)]);
-        player2.require_auth_for_args(vec![&env, session_id.into_val(&env), player2_points.into_val(&env)]);
+        let current_ledger = env.ledger().sequence();
+        let reveal_window = reveal_deadline
+            .checked_sub(current_ledger)
+            .ok_or(Error::InvalidDeadline)?;
+        if reveal_window == 0 || reveal_window > MAX_REVEAL_WINDOW_LEDGERS {
+            return Err(Error::InvalidDeadline);
+        }
 
-        // Get GameHub address
-        let game_hub_addr: Address = env
+        let key = DataKey::Game(session_id);
+        if env.storage().persistent().has(&key) {
+            return Err(Error::GameAlreadyExists);
+        }
+
+        // This binds each signer to every argument of the current invocation.
+        player1.require_auth();
+        player2.require_auth();
+
+        let game_hub: Address = env
             .storage()
             .instance()
             .get(&DataKey::GameHubAddress)
-            .expect("GameHub address not set");
+            .ok_or(Error::GameNotFound)?;
 
-        // Create GameHub client
-        let game_hub = GameHubClient::new(&env, &game_hub_addr);
-
-        // Call the Game Hub to start the session and lock points
-        // This requires THIS contract's authorization (env.current_contract_address())
-        game_hub.start_game(
-            &env.current_contract_address(),
-            &session_id,
-            &player1,
-            &player2,
-            &player1_points,
-            &player2_points,
-        );
-
-        // Create game (dice not rolled yet - will be generated in reveal_winner)
         let game = Game {
             player1: player1.clone(),
             player2: player2.clone(),
             player1_points,
             player2_points,
+            game_hub: game_hub.clone(),
+            player1_commitment,
+            player2_commitment,
+            reveal_deadline,
+            phase: Phase::Revealing,
             player1_rolled: false,
             player2_rolled: false,
+            first_secret: None,
             player1_die1: None,
             player1_die2: None,
             player2_die1: None,
@@ -185,185 +311,206 @@ impl DiceDuelContract {
             winner: None,
         };
 
-        // Store game in temporary storage with 30-day TTL
-        let game_key = DataKey::Game(session_id);
-        env.storage().temporary().set(&game_key, &game);
-
-        // Set TTL to ensure game is retained for at least 30 days
-        env.storage()
-            .temporary()
-            .extend_ttl(&game_key, GAME_TTL_LEDGERS, GAME_TTL_LEDGERS);
-
-        // Event emitted by GameHub contract (GameStarted)
-
+        // The entire invocation is atomic: a rejected Hub call rolls back this
+        // pre-lock state write.
+        put_game(&env, session_id, &game);
+        GameHubClient::new(&env, &game_hub).start_game(
+            &env.current_contract_address(),
+            &session_id,
+            &player1,
+            &player2,
+            &player1_points,
+            &player2_points,
+        );
         Ok(())
     }
 
-    /// Commit a roll for the current game.
-    /// Both players must roll before the winner can be revealed.
-    ///
-    /// # Arguments
-    /// * `session_id` - The session ID of the game
-    /// * `player` - Address of the player rolling the dice
-    pub fn roll(env: Env, session_id: u32, player: Address) -> Result<(), Error> {
-        player.require_auth();
-
-        // Get game from temporary storage
-        let key = DataKey::Game(session_id);
+    /// Verify one reveal. The second valid reveal prepares but does not settle.
+    pub fn roll(
+        env: Env,
+        session_id: u32,
+        player: Address,
+        secret: BytesN<32>,
+    ) -> Result<(), Error> {
         let mut game: Game = env
             .storage()
-            .temporary()
-            .get(&key)
+            .persistent()
+            .get(&DataKey::Game(session_id))
             .ok_or(Error::GameNotFound)?;
 
-        // Check game is still active (no winner yet)
-        if game.winner.is_some() {
+        if game.phase == Phase::Finalizing {
+            return Err(Error::FinalizationInProgress);
+        }
+        if is_terminal(game.phase) {
             return Err(Error::GameAlreadyEnded);
         }
 
-        // Update roll commitment for the appropriate player
-        if player == game.player1 {
-            if game.player1_rolled {
-                return Err(Error::AlreadyRolled);
-            }
-            game.player1_rolled = true;
+        let (role, already_revealed, expected_commitment) = if player == game.player1 {
+            (
+                PLAYER1_ROLE,
+                game.player1_rolled,
+                game.player1_commitment.clone(),
+            )
         } else if player == game.player2 {
-            if game.player2_rolled {
-                return Err(Error::AlreadyRolled);
-            }
-            game.player2_rolled = true;
+            (
+                PLAYER2_ROLE,
+                game.player2_rolled,
+                game.player2_commitment.clone(),
+            )
         } else {
             return Err(Error::NotPlayer);
+        };
+
+        if already_revealed {
+            return Err(Error::AlreadyRolled);
+        }
+        if game.phase != Phase::Revealing {
+            return Err(Error::GameAlreadyEnded);
+        }
+        if env.ledger().sequence() > game.reveal_deadline {
+            return Err(Error::RevealDeadlinePassed);
         }
 
-        // Store updated game in temporary storage
-        env.storage().temporary().set(&key, &game);
-
-        Ok(())
-    }
-
-    /// Reveal the winner of the game and submit outcome to GameHub.
-    /// Can only be called after both players have rolled.
-    /// This generates dice rolls for both players, determines the winner, and ends the session.
-    ///
-    /// # Arguments
-    /// * `session_id` - The session ID of the game
-    ///
-    /// # Returns
-    /// * `Address` - Address of the winning player
-    pub fn reveal_winner(env: Env, session_id: u32) -> Result<Address, Error> {
-        // Get game from temporary storage
-        let key = DataKey::Game(session_id);
-        let mut game: Game = env
-            .storage()
-            .temporary()
-            .get(&key)
-            .ok_or(Error::GameNotFound)?;
-
-        // Check if game already ended (has a winner)
-        if let Some(winner) = &game.winner {
-            return Ok(winner.clone());
+        player.require_auth();
+        let actual_commitment = commitment_digest(
+            &env,
+            session_id,
+            role,
+            &player,
+            &game.player1,
+            &game.player2,
+            game.player1_points,
+            game.player2_points,
+            &secret,
+        );
+        if actual_commitment != expected_commitment {
+            return Err(Error::WrongSecret);
         }
 
-        // Check both players have rolled
-        if !game.player1_rolled || !game.player2_rolled {
-            return Err(Error::BothPlayersNotRolled);
+        let was_player1_revealed = game.player1_rolled;
+        let was_player2_revealed = game.player2_rolled;
+        if role == PLAYER1_ROLE {
+            game.player1_rolled = true;
+        } else {
+            game.player2_rolled = true;
         }
 
-        // Generate deterministic dice rolls (1-6)
-        // Seed components (all deterministic and identical between sim/submit):
-        // 1. Session ID - unique per game
-        // 2. Player addresses - both players contribute
-        //
-        // Note: We do NOT include ledger sequence or timestamp because those differ
-        // between simulation and submission, which would cause different winners.
-        let mut seed_bytes = Bytes::new(&env);
-        seed_bytes.append(&Bytes::from_array(&env, &session_id.to_be_bytes()));
-        seed_bytes.append(&game.player1.to_string().to_bytes());
-        seed_bytes.append(&game.player2.to_string().to_bytes());
-        let base_seed = env.crypto().keccak256(&seed_bytes);
+        if !was_player1_revealed && !was_player2_revealed {
+            game.first_secret = Some(secret);
+            put_game(&env, session_id, &game);
+            return Ok(());
+        }
 
-        // Roll dice for both players using unique seeds
-        let mut roll_seed_bytes = Bytes::new(&env);
-        roll_seed_bytes.append(&Bytes::from(base_seed.clone()));
-        roll_seed_bytes.append(&Bytes::from_array(&env, &[1, 1]));
-        let player1_die1 = roll_die(&env, env.crypto().keccak256(&roll_seed_bytes).into());
+        let first_secret = game.first_secret.clone().ok_or(Error::GameNotFound)?;
+        let (player1_secret, player2_secret) = if was_player1_revealed {
+            (first_secret, secret)
+        } else {
+            (secret, first_secret)
+        };
+        let (player1_die1, player1_die2, player2_die1, player2_die2) =
+            prepare_dice(&env, &player1_secret, &player2_secret);
 
-        let mut roll_seed_bytes = Bytes::new(&env);
-        roll_seed_bytes.append(&Bytes::from(base_seed.clone()));
-        roll_seed_bytes.append(&Bytes::from_array(&env, &[1, 2]));
-        let player1_die2 = roll_die(&env, env.crypto().keccak256(&roll_seed_bytes).into());
-
-        let mut roll_seed_bytes = Bytes::new(&env);
-        roll_seed_bytes.append(&Bytes::from(base_seed.clone()));
-        roll_seed_bytes.append(&Bytes::from_array(&env, &[2, 1]));
-        let player2_die1 = roll_die(&env, env.crypto().keccak256(&roll_seed_bytes).into());
-
-        let mut roll_seed_bytes = Bytes::new(&env);
-        roll_seed_bytes.append(&Bytes::from(base_seed.clone()));
-        roll_seed_bytes.append(&Bytes::from_array(&env, &[2, 2]));
-        let player2_die2 = roll_die(&env, env.crypto().keccak256(&roll_seed_bytes).into());
-
+        game.first_secret = None;
         game.player1_die1 = Some(player1_die1);
         game.player1_die2 = Some(player1_die2);
         game.player2_die1 = Some(player2_die1);
         game.player2_die2 = Some(player2_die2);
+        game.winner = Some(
+            if player1_die1 + player1_die2 >= player2_die1 + player2_die2 {
+                game.player1.clone()
+            } else {
+                game.player2.clone()
+            },
+        );
+        game.phase = Phase::Ready;
+        put_game(&env, session_id, &game);
+        Ok(())
+    }
 
-        // Determine winner (if tie, player1 wins)
-        let player1_total = player1_die1 + player1_die2;
-        let player2_total = player2_die1 + player2_die2;
-        let winner = if player1_total >= player2_total {
-            game.player1.clone()
-        } else {
-            game.player2.clone()
-        };
-
-        // Update game with winner (this marks the game as ended)
-        game.winner = Some(winner.clone());
-        env.storage().temporary().set(&key, &game);
-
-        // Get GameHub address
-        let game_hub_addr: Address = env
+    /// Permissionlessly settle a Ready game through its snapshotted Hub.
+    pub fn reveal_winner(env: Env, session_id: u32) -> Result<Address, Error> {
+        let mut game: Game = env
             .storage()
-            .instance()
-            .get(&DataKey::GameHubAddress)
-            .expect("GameHub address not set");
+            .persistent()
+            .get(&DataKey::Game(session_id))
+            .ok_or(Error::GameNotFound)?;
 
-        // Create GameHub client
-        let game_hub = GameHubClient::new(&env, &game_hub_addr);
+        if game.phase == Phase::Finalizing {
+            return Err(Error::FinalizationInProgress);
+        }
+        if is_terminal(game.phase) {
+            return Err(Error::GameAlreadyEnded);
+        }
+        if game.phase != Phase::Ready {
+            return Err(Error::BothPlayersNotRolled);
+        }
 
-        // Call GameHub to end the session
-        // This unlocks points and updates standings
-        // Event emitted by the Game Hub contract (GameEnded)
-        let player1_won = winner == game.player1; // true if player1 won, false if player2 won
-        game_hub.end_game(&session_id, &player1_won);
+        let winner = game.winner.clone().ok_or(Error::BothPlayersNotRolled)?;
+        let player1_won = winner == game.player1;
 
+        game.phase = Phase::Finalizing;
+        put_game(&env, session_id, &game);
+        end_hub_game(&env, &game.game_hub, session_id, player1_won);
+        game.phase = Phase::Settled;
+        put_game(&env, session_id, &game);
         Ok(winner)
     }
 
-    /// Get game information.
-    ///
-    /// # Arguments
-    /// * `session_id` - The session ID of the game
-    ///
-    /// # Returns
-    /// * `Game` - The game state (includes dice after game ends)
+    /// Strictly after the inclusive deadline, one reveal wins by forfeit and
+    /// zero reveals cause neutral cancellation.
+    pub fn resolve_timeout(env: Env, session_id: u32) -> Result<Option<Address>, Error> {
+        let mut game: Game = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Game(session_id))
+            .ok_or(Error::GameNotFound)?;
+
+        if game.phase == Phase::Finalizing {
+            return Err(Error::FinalizationInProgress);
+        }
+        if is_terminal(game.phase) {
+            return Err(Error::GameAlreadyEnded);
+        }
+        if game.phase != Phase::Revealing {
+            return Err(Error::GameAlreadyEnded);
+        }
+        if env.ledger().sequence() <= game.reveal_deadline {
+            return Err(Error::RevealDeadlineNotReached);
+        }
+
+        let winner = match (game.player1_rolled, game.player2_rolled) {
+            (true, false) => Some(game.player1.clone()),
+            (false, true) => Some(game.player2.clone()),
+            (false, false) => None,
+            // Both valid reveals atomically transition to Ready.
+            (true, true) => return Err(Error::GameAlreadyEnded),
+        };
+
+        game.first_secret = None;
+        game.winner = winner.clone();
+        game.phase = Phase::Finalizing;
+        put_game(&env, session_id, &game);
+
+        if let Some(ref revealed_winner) = winner {
+            let player1_won = *revealed_winner == game.player1;
+            end_hub_game(&env, &game.game_hub, session_id, player1_won);
+            game.phase = Phase::Forfeited;
+        } else {
+            cancel_hub_game(&env, &game.game_hub, session_id);
+            game.phase = Phase::Cancelled;
+        }
+
+        put_game(&env, session_id, &game);
+        Ok(winner)
+    }
+
     pub fn get_game(env: Env, session_id: u32) -> Result<Game, Error> {
-        let key = DataKey::Game(session_id);
         env.storage()
-            .temporary()
-            .get(&key)
+            .persistent()
+            .get(&DataKey::Game(session_id))
             .ok_or(Error::GameNotFound)
     }
 
-    // ========================================================================
-    // Admin Functions
-    // ========================================================================
-
-    /// Get the current admin address
-    ///
-    /// # Returns
-    /// * `Address` - The admin address
     pub fn get_admin(env: Env) -> Address {
         env.storage()
             .instance()
@@ -371,10 +518,6 @@ impl DiceDuelContract {
             .expect("Admin not set")
     }
 
-    /// Set a new admin address
-    ///
-    /// # Arguments
-    /// * `new_admin` - The new admin address
     pub fn set_admin(env: Env, new_admin: Address) {
         let admin: Address = env
             .storage()
@@ -382,14 +525,12 @@ impl DiceDuelContract {
             .get(&DataKey::Admin)
             .expect("Admin not set");
         admin.require_auth();
-
         env.storage().instance().set(&DataKey::Admin, &new_admin);
+        env.storage()
+            .instance()
+            .extend_ttl(GAME_TTL_LEDGERS, GAME_TTL_LEDGERS);
     }
 
-    /// Get the current GameHub contract address
-    ///
-    /// # Returns
-    /// * `Address` - The GameHub contract address
     pub fn get_hub(env: Env) -> Address {
         env.storage()
             .instance()
@@ -397,10 +538,6 @@ impl DiceDuelContract {
             .expect("GameHub address not set")
     }
 
-    /// Set a new GameHub contract address
-    ///
-    /// # Arguments
-    /// * `new_hub` - The new GameHub contract address
     pub fn set_hub(env: Env, new_hub: Address) {
         let admin: Address = env
             .storage()
@@ -408,16 +545,14 @@ impl DiceDuelContract {
             .get(&DataKey::Admin)
             .expect("Admin not set");
         admin.require_auth();
-
         env.storage()
             .instance()
             .set(&DataKey::GameHubAddress, &new_hub);
+        env.storage()
+            .instance()
+            .extend_ttl(GAME_TTL_LEDGERS, GAME_TTL_LEDGERS);
     }
 
-    /// Update the contract WASM hash (upgrade contract)
-    ///
-    /// # Arguments
-    /// * `new_wasm_hash` - The hash of the new WASM binary
     pub fn upgrade(env: Env, new_wasm_hash: BytesN<32>) {
         let admin: Address = env
             .storage()
@@ -425,14 +560,9 @@ impl DiceDuelContract {
             .get(&DataKey::Admin)
             .expect("Admin not set");
         admin.require_auth();
-
         env.deployer().update_current_contract_wasm(new_wasm_hash);
     }
 }
-
-// ============================================================================
-// Tests
-// ============================================================================
 
 #[cfg(test)]
 mod test;

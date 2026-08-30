@@ -13,3 +13,6 @@ soroban-sdk = { workspace = true }
 
 [dev-dependencies]
 soroban-sdk = { workspace = true, features = ["testutils"] }
+mock-game-hub = { path = "../mock-game-hub", features = ["testutils"] }
+sha2 = "0.10.9"
+stellar-xdr = "27.0.0"

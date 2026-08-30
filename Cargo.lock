@@ -495,7 +495,10 @@ dependencies = [
 name = "dice-duel"
 version = "0.1.0"
 dependencies = [
+ "mock-game-hub",
+ "sha2",
  "soroban-sdk",
+ "stellar-xdr",
 ]
 
 [[package]]
