@@ -1,0 +1,30 @@
+name: Frontends
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Install frontend dependencies
+        run: |
+          bun --cwd=sgs_frontend install
+          bun --cwd=template_frontend install
+
+      - name: Check shared core matches template_frontend
+        run: bun run check:core
+
+      - name: Build studio frontend (docs)
+        run: bun --cwd=sgs_frontend run build:docs
+
+      - name: Build template frontend
+        run: bun --cwd=template_frontend run build

@@ -10,7 +10,9 @@
     "create": "bun run scripts/create.ts",
     "publish": "bun run scripts/publish.ts",
     "dev": "bun --cwd=sgs_frontend run dev",
-    "dev:game": "bun run scripts/dev-game.ts"
+    "dev:game": "bun run scripts/dev-game.ts",
+    "sync:core": "bun run scripts/frontend-core.ts --sync",
+    "check:core": "bun run scripts/frontend-core.ts"
   },
   "devDependencies": {
     "@types/bun": "latest"
