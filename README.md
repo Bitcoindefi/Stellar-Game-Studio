@@ -18,6 +18,11 @@ Stellar Game Studio is a toolkit for shipping web3 games quickly and efficiently
 - Testnet setup that generates wallets, deploys contracts, and wires bindings
 - A production build flow that outputs a deployable frontend
 
+## Prerequisites
+
+- **Node.js**: `>= 22.0.0` (required by `@stellar/stellar-sdk` v16+)
+- **Bun**: `>= 1.0.0`
+
 ## Quick Start (Dev)
 
 ```bash
