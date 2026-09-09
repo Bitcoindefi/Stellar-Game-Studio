@@ -5,7 +5,6 @@ import { Buffer } from 'buffer';
 import { signAndSendViaLaunchtube } from '@/utils/transactionHelper';
 import { calculateValidUntilLedger } from '@/utils/ledgerUtils';
 import { injectSignedAuthEntry } from '@/utils/authEntryUtils';
-import type { ContractSigner } from '@/types/signer';
 
 type ClientOptions = contract.ClientOptions;
 
@@ -31,7 +30,7 @@ export class NumberGuessService {
    */
   private createSigningClient(
     publicKey: string,
-    signer: ContractSigner
+    signer: Pick<contract.ClientOptions, 'signTransaction' | 'signAuthEntry'>
   ): NumberGuessClient {
     const options: ClientOptions = {
       contractId: this.contractId,
@@ -77,7 +76,7 @@ export class NumberGuessService {
     player2: string,
     player1Points: bigint,
     player2Points: bigint,
-    signer: ContractSigner,
+    signer: Pick<contract.ClientOptions, 'signTransaction' | 'signAuthEntry'>,
     authTtlMinutes?: number
   ) {
     const client = this.createSigningClient(player1, signer);
@@ -118,7 +117,7 @@ export class NumberGuessService {
     player2: string,
     player1Points: bigint,
     player2Points: bigint,
-    player1Signer: ContractSigner,
+    player1Signer: Pick<contract.ClientOptions, 'signTransaction' | 'signAuthEntry'>,
     authTtlMinutes?: number
   ): Promise<string> {
     // Step 1: Build transaction with Player 2 as the source (no signing capabilities needed yet)
@@ -185,7 +184,8 @@ export class NumberGuessService {
     // This properly handles the signature generation and auth entry reconstruction
     console.log('[prepareStartGame] Signing Player 1 auth entry with expiration:', validUntilLedgerSeq);
 
-    if (!player1Signer.signAuthEntry) {
+    const signAuthEntry = typeof player1Signer.signAuthEntry === 'function' ? player1Signer.signAuthEntry : null;
+    if (!signAuthEntry) {
       throw new Error('signAuthEntry function not available');
     }
 
@@ -198,11 +198,7 @@ export class NumberGuessService {
         // Call wallet to sign the preimage hash
         console.log('[prepareStartGame] Signing preimage with wallet...');
 
-        if (!player1Signer.signAuthEntry) {
-          throw new Error('Wallet does not support auth entry signing');
-        }
-
-        const signResult = await player1Signer.signAuthEntry(
+        const signResult = await signAuthEntry(
           preimage.toXDR('base64'),  // Preimage as base64 XDR
           {
             networkPassphrase: NETWORK_PASSPHRASE,
@@ -331,7 +327,7 @@ export class NumberGuessService {
     player1SignedAuthEntryXdr: string,
     player2Address: string,
     player2Points: bigint,
-    player2Signer: ContractSigner,
+    player2Signer: Pick<contract.ClientOptions, 'signTransaction' | 'signAuthEntry'>,
     authTtlMinutes?: number
   ): Promise<string> {
     console.log('[importAndSignAuthEntry] Parsing Player 1 signed auth entry...');
@@ -448,7 +444,7 @@ export class NumberGuessService {
   async finalizeStartGame(
     xdr: string,
     signerAddress: string,
-    signer: ContractSigner,
+    signer: Pick<contract.ClientOptions, 'signTransaction' | 'signAuthEntry'>,
     authTtlMinutes?: number
   ) {
     const client = this.createSigningClient(signerAddress, signer);
@@ -583,7 +579,7 @@ export class NumberGuessService {
     sessionId: number,
     playerAddress: string,
     guess: number,
-    signer: ContractSigner,
+    signer: Pick<contract.ClientOptions, 'signTransaction' | 'signAuthEntry'>,
     authTtlMinutes?: number
   ) {
     if (guess < 1 || guess > 10) {
@@ -625,7 +621,7 @@ export class NumberGuessService {
   async revealWinner(
     sessionId: number,
     callerAddress: string,
-    signer: ContractSigner,
+    signer: Pick<contract.ClientOptions, 'signTransaction' | 'signAuthEntry'>,
     authTtlMinutes?: number
   ) {
     const client = this.createSigningClient(callerAddress, signer);

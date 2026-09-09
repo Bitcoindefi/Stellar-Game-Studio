@@ -7,7 +7,6 @@ import { xdr, Address, authorizeEntry } from '@stellar/stellar-sdk';
 import { contract } from '@stellar/stellar-sdk';
 import { calculateValidUntilLedger } from './ledgerUtils';
 import { DEFAULT_AUTH_TTL_MINUTES } from './constants';
-import type { ContractSigner } from '../types/signer';
 
 /**
  * Inject a signed auth entry from Player 1 into Player 2's transaction
@@ -23,7 +22,7 @@ export async function injectSignedAuthEntry(
   tx: contract.AssembledTransaction<any>,
   player1AuthEntryXDR: string,
   player2Address: string,
-  player2Signer: ContractSigner,
+  player2Signer: Pick<contract.ClientOptions, 'signTransaction' | 'signAuthEntry'>,
   validUntilLedgerSeq?: number
 ): Promise<contract.AssembledTransaction<any>> {
   // Parse Player 1's signed auth entry
@@ -93,7 +92,8 @@ export async function injectSignedAuthEntry(
   if (player2AuthEntry && player2Index !== -1) {
     console.log('[injectSignedAuthEntry] Signing Player 2 auth entry');
 
-    if (!player2Signer.signAuthEntry) {
+    const signAuthEntry = typeof player2Signer.signAuthEntry === 'function' ? player2Signer.signAuthEntry : null;
+    if (!signAuthEntry) {
       throw new Error('signAuthEntry function not available');
     }
 
@@ -106,11 +106,7 @@ export async function injectSignedAuthEntry(
       async (preimage) => {
         console.log('[injectSignedAuthEntry] Signing Player 2 preimage...');
 
-        if (!player2Signer.signAuthEntry) {
-          throw new Error('Wallet does not support auth entry signing');
-        }
-
-        const signResult = await player2Signer.signAuthEntry(preimage.toXDR('base64'), {
+        const signResult = await signAuthEntry(preimage.toXDR('base64'), {
           networkPassphrase: tx.options.networkPassphrase,
           address: player2Address,
         });

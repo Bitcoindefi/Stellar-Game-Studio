@@ -4,7 +4,6 @@ import { contract, Address, authorizeEntry, xdr } from '@stellar/stellar-sdk';
 import { Buffer } from 'buffer';
 import { signAndSendViaLaunchtube } from '@/utils/transactionHelper';
 import { calculateValidUntilLedger } from '@/utils/ledgerUtils';
-import type { ContractSigner } from '@/types/signer';
 
 type ClientOptions = contract.ClientOptions;
 
@@ -28,7 +27,7 @@ export class TwentyOneService {
    */
   private createSigningClient(
     publicKey: string,
-    signer: ContractSigner
+    signer: Pick<contract.ClientOptions, 'signTransaction' | 'signAuthEntry'>
   ): TwentyOneClient {
     const options: ClientOptions = {
       contractId: TWENTY_ONE_CONTRACT,
@@ -97,7 +96,7 @@ export class TwentyOneService {
     player2: string,
     player1Points: bigint,
     player2Points: bigint,
-    player1Signer: ContractSigner,
+    player1Signer: Pick<contract.ClientOptions, 'signTransaction' | 'signAuthEntry'>,
     authTtlMinutes?: number
   ): Promise<string> {
     // Build transaction with Player 2 as the source
@@ -162,7 +161,8 @@ export class TwentyOneService {
     // Sign the auth entry
     console.log('[prepareStartGame] Signing Player 1 auth entry');
 
-    if (!player1Signer.signAuthEntry) {
+    const signAuthEntry = typeof player1Signer.signAuthEntry === 'function' ? player1Signer.signAuthEntry : null;
+    if (!signAuthEntry) {
       throw new Error('signAuthEntry function not available');
     }
 
@@ -171,11 +171,7 @@ export class TwentyOneService {
       async (preimage) => {
         console.log('[prepareStartGame] Signing preimage with wallet...');
 
-        if (!player1Signer.signAuthEntry) {
-          throw new Error('Wallet does not support auth entry signing');
-        }
-
-        const signResult = await player1Signer.signAuthEntry(
+        const signResult = await signAuthEntry(
           preimage.toXDR('base64'),
           {
             networkPassphrase: NETWORK_PASSPHRASE,
@@ -207,7 +203,7 @@ export class TwentyOneService {
     player1AuthEntryXDR: string,
     player2: string,
     player2Points: bigint,
-    player2Signer: ContractSigner
+    player2Signer: Pick<contract.ClientOptions, 'signTransaction' | 'signAuthEntry'>
   ): Promise<string> {
     // Parse the auth entry to extract game parameters
     const gameParams = this.parseAuthEntry(player1AuthEntryXDR);
@@ -241,7 +237,7 @@ export class TwentyOneService {
   async finalizeStartGame(
     fullySignedTxXDR: string,
     player2: string,
-    player2Signer: ContractSigner
+    player2Signer: Pick<contract.ClientOptions, 'signTransaction' | 'signAuthEntry'>
   ) {
     const client = this.createSigningClient(player2, player2Signer);
 
@@ -315,7 +311,7 @@ export class TwentyOneService {
   async hit(
     sessionId: number,
     player: string,
-    signer: ContractSigner
+    signer: Pick<contract.ClientOptions, 'signTransaction' | 'signAuthEntry'>
   ) {
     const client = this.createSigningClient(player, signer);
     const tx = await client.hit({
@@ -338,7 +334,7 @@ export class TwentyOneService {
   async stick(
     sessionId: number,
     player: string,
-    signer: ContractSigner
+    signer: Pick<contract.ClientOptions, 'signTransaction' | 'signAuthEntry'>
   ) {
     const client = this.createSigningClient(player, signer);
     const tx = await client.stick({
@@ -361,7 +357,7 @@ export class TwentyOneService {
   async revealWinner(
     sessionId: number,
     player: string,
-    signer: ContractSigner
+    signer: Pick<contract.ClientOptions, 'signTransaction' | 'signAuthEntry'>
   ) {
     const client = this.createSigningClient(player, signer);
     const tx = await client.reveal_winner({
