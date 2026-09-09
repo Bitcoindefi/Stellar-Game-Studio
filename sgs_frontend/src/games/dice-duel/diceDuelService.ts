@@ -5,6 +5,7 @@ import { Buffer } from 'buffer';
 import { signAndSendViaLaunchtube } from '@/utils/transactionHelper';
 import { calculateValidUntilLedger } from '@/utils/ledgerUtils';
 import { injectSignedAuthEntry } from '@/utils/authEntryUtils';
+import type { ContractSigner } from '@/types/signer';
 
 type ClientOptions = contract.ClientOptions;
 
@@ -30,7 +31,7 @@ export class DiceDuelService {
    */
   private createSigningClient(
     publicKey: string,
-    signer: Pick<contract.ClientOptions, 'signTransaction' | 'signAuthEntry'>
+    signer: ContractSigner
   ): DiceDuelClient {
     const options: ClientOptions = {
       contractId: this.contractId,
@@ -76,7 +77,7 @@ export class DiceDuelService {
     player2: string,
     player1Points: bigint,
     player2Points: bigint,
-    signer: Pick<contract.ClientOptions, 'signTransaction' | 'signAuthEntry'>,
+    signer: ContractSigner,
     authTtlMinutes?: number
   ) {
     const client = this.createSigningClient(player1, signer);
@@ -117,7 +118,7 @@ export class DiceDuelService {
     player2: string,
     player1Points: bigint,
     player2Points: bigint,
-    player1Signer: Pick<contract.ClientOptions, 'signTransaction' | 'signAuthEntry'>,
+    player1Signer: ContractSigner,
     authTtlMinutes?: number
   ): Promise<string> {
     // Step 1: Build transaction with Player 2 as the source (no signing capabilities needed yet)
@@ -330,7 +331,7 @@ export class DiceDuelService {
     player1SignedAuthEntryXdr: string,
     player2Address: string,
     player2Points: bigint,
-    player2Signer: Pick<contract.ClientOptions, 'signTransaction' | 'signAuthEntry'>,
+    player2Signer: ContractSigner,
     authTtlMinutes?: number
   ): Promise<string> {
     console.log('[importAndSignAuthEntry] Parsing Player 1 signed auth entry...');
@@ -447,7 +448,7 @@ export class DiceDuelService {
   async finalizeStartGame(
     xdr: string,
     signerAddress: string,
-    signer: Pick<contract.ClientOptions, 'signTransaction' | 'signAuthEntry'>,
+    signer: ContractSigner,
     authTtlMinutes?: number
   ) {
     const client = this.createSigningClient(signerAddress, signer);
@@ -581,7 +582,7 @@ export class DiceDuelService {
   async roll(
     sessionId: number,
     playerAddress: string,
-    signer: Pick<contract.ClientOptions, 'signTransaction' | 'signAuthEntry'>,
+    signer: ContractSigner,
     authTtlMinutes?: number
   ) {
     const client = this.createSigningClient(playerAddress, signer);
@@ -618,7 +619,7 @@ export class DiceDuelService {
   async revealWinner(
     sessionId: number,
     callerAddress: string,
-    signer: Pick<contract.ClientOptions, 'signTransaction' | 'signAuthEntry'>,
+    signer: ContractSigner,
     authTtlMinutes?: number
   ) {
     const client = this.createSigningClient(callerAddress, signer);

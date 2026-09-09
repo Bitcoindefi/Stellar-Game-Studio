@@ -4,6 +4,7 @@ import { contract, Address, authorizeEntry, xdr } from '@stellar/stellar-sdk';
 import { Buffer } from 'buffer';
 import { signAndSendViaLaunchtube } from '@/utils/transactionHelper';
 import { calculateValidUntilLedger } from '@/utils/ledgerUtils';
+import type { ContractSigner } from '@/types/signer';
 
 type ClientOptions = contract.ClientOptions;
 
@@ -27,7 +28,7 @@ export class TwentyOneService {
    */
   private createSigningClient(
     publicKey: string,
-    signer: Pick<contract.ClientOptions, 'signTransaction' | 'signAuthEntry'>
+    signer: ContractSigner
   ): TwentyOneClient {
     const options: ClientOptions = {
       contractId: TWENTY_ONE_CONTRACT,
@@ -96,7 +97,7 @@ export class TwentyOneService {
     player2: string,
     player1Points: bigint,
     player2Points: bigint,
-    player1Signer: Pick<contract.ClientOptions, 'signTransaction' | 'signAuthEntry'>,
+    player1Signer: ContractSigner,
     authTtlMinutes?: number
   ): Promise<string> {
     // Build transaction with Player 2 as the source
@@ -206,7 +207,7 @@ export class TwentyOneService {
     player1AuthEntryXDR: string,
     player2: string,
     player2Points: bigint,
-    player2Signer: Pick<contract.ClientOptions, 'signTransaction' | 'signAuthEntry'>
+    player2Signer: ContractSigner
   ): Promise<string> {
     // Parse the auth entry to extract game parameters
     const gameParams = this.parseAuthEntry(player1AuthEntryXDR);
@@ -240,7 +241,7 @@ export class TwentyOneService {
   async finalizeStartGame(
     fullySignedTxXDR: string,
     player2: string,
-    player2Signer: Pick<contract.ClientOptions, 'signTransaction' | 'signAuthEntry'>
+    player2Signer: ContractSigner
   ) {
     const client = this.createSigningClient(player2, player2Signer);
 
@@ -314,7 +315,7 @@ export class TwentyOneService {
   async hit(
     sessionId: number,
     player: string,
-    signer: Pick<contract.ClientOptions, 'signTransaction' | 'signAuthEntry'>
+    signer: ContractSigner
   ) {
     const client = this.createSigningClient(player, signer);
     const tx = await client.hit({
@@ -337,7 +338,7 @@ export class TwentyOneService {
   async stick(
     sessionId: number,
     player: string,
-    signer: Pick<contract.ClientOptions, 'signTransaction' | 'signAuthEntry'>
+    signer: ContractSigner
   ) {
     const client = this.createSigningClient(player, signer);
     const tx = await client.stick({
@@ -360,7 +361,7 @@ export class TwentyOneService {
   async revealWinner(
     sessionId: number,
     player: string,
-    signer: Pick<contract.ClientOptions, 'signTransaction' | 'signAuthEntry'>
+    signer: ContractSigner
   ) {
     const client = this.createSigningClient(player, signer);
     const tx = await client.reveal_winner({

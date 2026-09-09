@@ -7,6 +7,7 @@ import { xdr, Address, authorizeEntry } from '@stellar/stellar-sdk';
 import { contract } from '@stellar/stellar-sdk';
 import { calculateValidUntilLedger } from './ledgerUtils';
 import { DEFAULT_AUTH_TTL_MINUTES } from './constants';
+import type { ContractSigner } from '../types/signer';
 
 /**
  * Inject a signed auth entry from Player 1 into Player 2's transaction
@@ -22,7 +23,7 @@ export async function injectSignedAuthEntry(
   tx: contract.AssembledTransaction<any>,
   player1AuthEntryXDR: string,
   player2Address: string,
-  player2Signer: Pick<contract.ClientOptions, 'signTransaction' | 'signAuthEntry'>,
+  player2Signer: ContractSigner,
   validUntilLedgerSeq?: number
 ): Promise<contract.AssembledTransaction<any>> {
   // Parse Player 1's signed auth entry
