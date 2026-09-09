@@ -161,8 +161,7 @@ export class TwentyOneService {
     // Sign the auth entry
     console.log('[prepareStartGame] Signing Player 1 auth entry');
 
-    const signAuthEntry = typeof player1Signer.signAuthEntry === 'function' ? player1Signer.signAuthEntry : null;
-    if (!signAuthEntry) {
+    if (!player1Signer.signAuthEntry) {
       throw new Error('signAuthEntry function not available');
     }
 
@@ -171,7 +170,11 @@ export class TwentyOneService {
       async (preimage) => {
         console.log('[prepareStartGame] Signing preimage with wallet...');
 
-        const signResult = await signAuthEntry(
+        if (!player1Signer.signAuthEntry) {
+          throw new Error('Wallet does not support auth entry signing');
+        }
+
+        const signResult = await (player1Signer.signAuthEntry as any)(
           preimage.toXDR('base64'),
           {
             networkPassphrase: NETWORK_PASSPHRASE,

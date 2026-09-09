@@ -184,8 +184,7 @@ export class DiceDuelService {
     // This properly handles the signature generation and auth entry reconstruction
     console.log('[prepareStartGame] Signing Player 1 auth entry with expiration:', validUntilLedgerSeq);
 
-    const signAuthEntry = typeof player1Signer.signAuthEntry === 'function' ? player1Signer.signAuthEntry : null;
-    if (!signAuthEntry) {
+    if (!player1Signer.signAuthEntry) {
       throw new Error('signAuthEntry function not available');
     }
 
@@ -198,7 +197,11 @@ export class DiceDuelService {
         // Call wallet to sign the preimage hash
         console.log('[prepareStartGame] Signing preimage with wallet...');
 
-        const signResult = await signAuthEntry(
+        if (!player1Signer.signAuthEntry) {
+          throw new Error('Wallet does not support auth entry signing');
+        }
+
+        const signResult = await (player1Signer.signAuthEntry as any)(
           preimage.toXDR('base64'),  // Preimage as base64 XDR
           {
             networkPassphrase: NETWORK_PASSPHRASE,
