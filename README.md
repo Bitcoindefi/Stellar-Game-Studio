@@ -18,6 +18,26 @@ Stellar Game Studio is a toolkit for shipping web3 games quickly and efficiently
 - Testnet setup that generates wallets, deploys contracts, and wires bindings
 - A production build flow that outputs a deployable frontend
 
+## Prerequisites (Requisitos Previos)
+
+Before compiling the contracts, you must have the following installed on your system:
+
+1. **Rust & WASM Target**:
+   ```bash
+   curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+   rustup target add wasm32-unknown-unknown
+   ```
+2. **Stellar CLI** (required to build and deploy Soroban contracts):
+   ```bash
+   cargo install --locked stellar-cli --features opt
+   ```
+3. **Bun** (for frontend and scripting):
+   ```bash
+   curl -fsSL https://bun.sh/install | bash
+   ```
+
+*Nota para usuarios hispanohablantes:* Si intentas ejecutar `bun run setup` sin instalar Rust y el target de WebAssembly (`wasm32-unknown-unknown`), el proceso de compilación de los contratos fallará con errores de `cargo` no encontrado o target inválido. Asegúrate de instalar estas dependencias primero.
+
 ## Quick Start (Dev)
 
 ```bash
