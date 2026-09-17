@@ -92,7 +92,8 @@ export async function injectSignedAuthEntry(
   if (player2AuthEntry && player2Index !== -1) {
     console.log('[injectSignedAuthEntry] Signing Player 2 auth entry');
 
-    if (!player2Signer.signAuthEntry) {
+    const signAuthEntry = typeof player2Signer.signAuthEntry === 'function' ? player2Signer.signAuthEntry : null;
+    if (!signAuthEntry) {
       throw new Error('signAuthEntry function not available');
     }
 
@@ -105,11 +106,7 @@ export async function injectSignedAuthEntry(
       async (preimage) => {
         console.log('[injectSignedAuthEntry] Signing Player 2 preimage...');
 
-        if (!player2Signer.signAuthEntry) {
-          throw new Error('Wallet does not support auth entry signing');
-        }
-
-        const signResult = await player2Signer.signAuthEntry(preimage.toXDR('base64'), {
+        const signResult = await signAuthEntry(preimage.toXDR('base64'), {
           networkPassphrase: tx.options.networkPassphrase,
           address: player2Address,
         });

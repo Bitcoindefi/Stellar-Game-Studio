@@ -201,7 +201,7 @@ export class NumberGuessService {
           throw new Error('Wallet does not support auth entry signing');
         }
 
-        const signResult = await player1Signer.signAuthEntry(
+        const signResult = await (player1Signer.signAuthEntry as any)(
           preimage.toXDR('base64'),  // Preimage as base64 XDR
           {
             networkPassphrase: NETWORK_PASSPHRASE,
